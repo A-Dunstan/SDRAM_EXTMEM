@@ -18,48 +18,6 @@ volatile uint32_t F_BUS_ACTUAL = 132000000;
 
 uint32_t set_arm_clock(uint32_t frequency);
 
-#define LUT0(opcode, pads, operand) (FLEXSPI_LUT_INSTRUCTION((opcode), (pads), (operand)))
-#define LUT1(opcode, pads, operand) (LUT0(opcode, pads, operand) << 16)
-#define CMD_SDR          FLEXSPI_LUT_OPCODE_CMD_SDR
-#define ADDR_SDR         FLEXSPI_LUT_OPCODE_RADDR_SDR
-#define READ_SDR         FLEXSPI_LUT_OPCODE_READ_SDR
-#define DUMMY_SDR        FLEXSPI_LUT_OPCODE_DUMMY_SDR
-#define PINS1            FLEXSPI_LUT_NUM_PADS_1
-
-static uint32_t flash_read_security(void) {
-  uint32_t brand = 0;
-  // unlock LUT
-  FLEXSPI_LUTKEY = FLEXSPI_LUTKEY_VALUE;
-  FLEXSPI_LUTCR = FLEXSPI_LUTCR_UNLOCK;
-  // first read the flash ID
-  FLEXSPI_LUT60 = LUT0(CMD_SDR, PINS1, 0x9F) | LUT1(READ_SDR, PINS1, 3);
-  FLEXSPI_LUT61 = FLEXSPI_LUT62 = FLEXSPI_LUT63 = 0;
-  FLEXSPI_IPCR0 = 0;
-  FLEXSPI_IPCR1 = FLEXSPI_IPCR1_ISEQID(15);
-  FLEXSPI_IPRXFCR = FLEXSPI_IPRXFCR_CLRIPRXF; // clear read FIFO
-  FLEXSPI_INTR = FLEXSPI_INTR_IPCMDDONE;      // clear done interrupt
-  asm volatile("dmb");
-  FLEXSPI_IPCMD = FLEXSPI_IPCMD_TRG;
-  while ((FLEXSPI_INTR & FLEXSPI_INTR_IPCMDDONE) == 0);
-  if ((FLEXSPI_RFDR0 & 0xFFFFFF) == 0x1870EF) { // flash looks like a micromod
-    FLEXSPI_LUT60 = LUT0(CMD_SDR, PINS1, 0x48) | LUT1(ADDR_SDR, PINS1, 24);
-    FLEXSPI_LUT61 = LUT0(DUMMY_SDR, PINS1, 8) | LUT1(READ_SDR, PINS1, 4);
-    FLEXSPI_IPCR0 = 3 << 12; // security register 3
-    FLEXSPI_IPCR1 = FLEXSPI_IPCR1_ISEQID(15);
-    FLEXSPI_IPRXFCR = FLEXSPI_IPRXFCR_CLRIPRXF; // clear read FIFO
-    FLEXSPI_INTR = FLEXSPI_INTR_IPCMDDONE;      // clear done interrupt
-    asm volatile("dmb");
-    FLEXSPI_IPCMD = FLEXSPI_IPCMD_TRG;
-    while ((FLEXSPI_INTR & FLEXSPI_INTR_IPCMDDONE) == 0);
-    brand = FLEXSPI_RFDR0;
-  }
-  // relock LUT
-  FLEXSPI_LUTKEY = FLEXSPI_LUTKEY_VALUE;
-  FLEXSPI_LUTCR = FLEXSPI_LUTCR_LOCK;
-
-  return brand;
-}
-
 static uint32_t freq_to_voltage(uint32_t freq)
 {
   if (freq <= 24000000)
@@ -67,10 +25,10 @@ static uint32_t freq_to_voltage(uint32_t freq)
 
   uint32_t v = 1150;
   if (freq > 432000000) {
-    uint32_t brand = flash_read_security();
-    if ((brand & 0xFF) == 'D' && ((brand >> 8) & 0xFF) == 'B') {
+    uint32_t speed = (HW_OCOTP_CFG3 >> 16) & 3;
+    if (speed == 1) { // 500MHz MCU, requires more frequent voltage increases
       v += ((freq - 432000000) / 25000000) * 25;
-    } else if (freq > 528000000) {
+    } else if (freq > 528000000) { // else assume 600MHz MCU
       v = 1250;
       if (freq > 600000000) {
         v += ((freq - 600000000) / 28000000) * 25;
